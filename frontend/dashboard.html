@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - SkillSwap</title>
+    <meta name="description" content="Manage your skill exchanges, pending connections, and peer learning sessions.">
+    <link rel="stylesheet" href="style.css">
+<script>
+    (function() {
+        try {
+            var t = localStorage.getItem('skillswap_theme');
+            if (t === 'dark' || (!t && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        } catch(e) {}
+    })();
+</script>
+</head>
+<body>
+
+    <!-- Sticky Navigation -->
+    <nav class="navbar" id="main-nav"></nav>
+
+    <!-- Main Dashboard Container -->
+    <main class="dashboard">
+
+        <!-- Top Greeting Header -->
+        <header class="dashboard-header">
+            <div>
+                <h1>Welcome back</h1>
+                <p>Ready to learn something new today?</p>
+            </div>
+
+            <div class="dashboard-buttons">
+                <a href="browse-skills.html" class="btn btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="16" height="16"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    Find a skill
+                </a>
+
+                <a href="signup.html" class="btn btn-secondary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                    Edit Profile
+                </a>
+            </div>
+        </header>
+
+        <!-- Real Stats Overview Cards -->
+        <section class="dashboard-stats" aria-label="Account Statistics">
+            <!-- Total Connections -->
+            <div class="stat-card">
+                <div class="stat-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                </div>
+                <div>
+                    <p>Total Connections</p>
+                    <h2 id="total-connections">0</h2>
+                    <span>Active skill partners</span>
+                </div>
+            </div>
+
+            <!-- Pending Requests -->
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fffbeb; color:#f59e0b;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
+                </div>
+                <div>
+                    <p>Pending Requests</p>
+                    <h2 id="pending-requests">0</h2>
+                    <span>Awaiting confirmation</span>
+                </div>
+            </div>
+
+            <!-- Skills Offered -->
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#ecfdf5; color:#10b981;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M22 10v6M2 10l10-5 10 5-10 5z"></path><path d="M6 12v5c3 3 9 3 12 0v-5"></path></svg>
+                </div>
+                <div>
+                    <p>Skills Offered</p>
+                    <h2 id="skills-count">0</h2>
+                    <span>Available to teach</span>
+                </div>
+            </div>
+
+            <!-- Community Rating -->
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#f5f3ff; color:#7c3aed;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                </div>
+                <div>
+                    <p>Community Rating</p>
+                    <h2 id="community-rating-val">5.0</h2>
+                    <span id="community-rating-count">Verified feedback</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Primary 2-Column Content Grid -->
+        <div class="dashboard-grid">
+            <!-- Profile Summary Card -->
+            <div class="dashboard-card">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:var(--primary);"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                    Profile Summary
+                </h2>
+                <p>Your current skill exchange profile as seen by others</p>
+
+                <div id="dashboard-user">
+                    <div class="skeleton-card" style="padding:16px;">
+                        <div class="skeleton skeleton-text" style="width:50%; margin-bottom:8px;"></div>
+                        <div class="skeleton skeleton-text" style="width:80%;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity Timeline Card -->
+            <div class="dashboard-card">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:var(--primary);"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                    Recent Activity
+                </h2>
+                <p>Your latest connection requests and updates</p>
+
+                <div id="recent-activity">
+                    <div style="padding:16px; text-align:center; color:var(--text-muted);">
+                        <p>Loading activity stream...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Verified Reviews & Feedback Received -->
+        <div class="dashboard-card" style="margin-bottom:var(--space-6);">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+                <div>
+                    <h2 style="margin-bottom:2px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:#f59e0b;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                        Peer Reviews & Session Feedback
+                    </h2>
+                    <p style="margin-bottom:0;">Ratings and reviews given by peers after live skill exchange sessions</p>
+                </div>
+                <div id="reviews-header-summary" style="display:flex; align-items:center; gap:8px;">
+                    <!-- Injected dynamically -->
+                </div>
+            </div>
+
+            <div id="dashboard-reviews-list" style="display:flex; flex-direction:column; gap:12px;">
+                <div style="padding:16px; text-align:center; color:var(--text-muted);">
+                    <p>Loading session reviews...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI-Proctored Learning Impact Analyzer Card -->
+        <div class="dashboard-card" style="margin-bottom:var(--space-6);">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:12px;">
+                <div>
+                    <h2 style="margin-bottom:2px;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:var(--primary);"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                        AI-Proctored Learning Impact Analyzer
+                    </h2>
+                    <p style="margin-bottom:0;">Measures learning progress through proctored pre-tests and post-tests, comparing baseline scores to post-session mastery under verified proctoring.</p>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <a href="connections.html" class="btn btn-primary btn-sm" style="padding:6px 12px; font-size:0.8rem;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        Start Learning Assessment
+                    </a>
+                    <span class="badge badge-neutral" style="font-size:0.75rem; padding:4px 10px;">Proctored Rubric</span>
+                </div>
+            </div>
+
+            <div id="dashboard-impact-reports-list" style="display:flex; flex-direction:column; gap:12px;">
+                <div style="padding:16px; text-align:center; color:var(--text-muted);">
+                    <p>Loading proctored learning impact records...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Skills Breakdown Grid -->
+        <div class="dashboard-grid">
+            <!-- Skills Offered Card -->
+            <div class="dashboard-card">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:var(--primary);"><path d="M22 10v6M2 10l10-5 10 5-10 5z"></path><path d="M6 12v5c3 3 9 3 12 0v-5"></path></svg>
+                    Skills I Can Teach
+                </h2>
+                <p>Skills you have listed to share with other members</p>
+
+                <div id="skills-offered">
+                    <p class="text-muted">Loading skills...</p>
+                </div>
+            </div>
+
+            <!-- Skills Wanted Card -->
+            <div class="dashboard-card">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" style="color:var(--success);"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+                    Skills I Want To Learn
+                </h2>
+                <p>Topics you are actively looking to explore</p>
+
+                <div id="skills-wanted">
+                    <p class="text-muted">Loading skills...</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Global Application Engine & Verification Engine -->
+    <script src="script.js"></script>
+    <script src="skillVerification.js"></script>
+    <script src="learningImpact.js"></script>
+</body>
+</html>
