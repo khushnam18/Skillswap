@@ -183,20 +183,34 @@ function setupSocketIO(io) {
                 const { connectionId } = data;
                 if (!connectionId) return;
 
-                const connection = await Connection.findById(connectionId);
+                let connection = null;
+                if (isMongoActive()) {
+                    try {
+                        connection = await Connection.findById(connectionId);
+                    } catch {
+                        connection = null;
+                    }
+                }
+                if (!connection) {
+                    connection = memoryStore.getConnectionById(connectionId);
+                }
                 if (!connection || connection.status !== "accepted") return;
 
                 const currentUserId = socket.userId;
-                const p1 = connection.sender.toString();
-                const p2 = connection.receiver.toString();
+                const p1 = (connection.sender._id || connection.sender).toString();
+                const p2 = (connection.receiver._id || connection.receiver).toString();
                 if (currentUserId !== p1 && currentUserId !== p2) return;
 
                 const otherUserId = (p1 === currentUserId) ? p2 : p1;
 
-                await Message.updateMany(
-                    { connection: connectionId, receiver: currentUserId, read: false },
-                    { $set: { read: true } }
-                );
+                if (isMongoActive()) {
+                    await Message.updateMany(
+                        { connection: connectionId, receiver: currentUserId, read: false },
+                        { $set: { read: true } }
+                    );
+                } else {
+                    memoryStore.markMessagesAsRead(connectionId, currentUserId);
+                }
 
                 // Notify sender that their messages have been read
                 io.to("user_" + otherUserId).emit("messagesRead", {

@@ -104,6 +104,39 @@ const initialMessages = [
     }
 ];
 
+const initialReviews = [
+    {
+        _id: "65f004000000000000000001",
+        reviewer: "65f001000000000000000002",
+        reviewee: "65f001000000000000000001",
+        rating: 5,
+        feedback: "Fantastic session! Aditi explained React concurrent rendering and custom hooks with crystal clarity.",
+        skillTopic: "React & TypeScript",
+        createdAt: new Date(Date.now() - 3600000 * 18),
+        updatedAt: new Date(Date.now() - 3600000 * 18)
+    },
+    {
+        _id: "65f004000000000000000002",
+        reviewer: "65f001000000000000000001",
+        reviewee: "65f001000000000000000002",
+        rating: 5,
+        feedback: "Khushnam is an extraordinary backend mentor. We architected a real-time event pipeline in under an hour!",
+        skillTopic: "Node.js & WebSockets",
+        createdAt: new Date(Date.now() - 3600000 * 16),
+        updatedAt: new Date(Date.now() - 3600000 * 16)
+    },
+    {
+        _id: "65f004000000000000000003",
+        reviewer: "65f001000000000000000004",
+        reviewee: "65f001000000000000000005",
+        rating: 5,
+        feedback: "Marcus broke down neural network fundamentals and NLP pipelines seamlessly. Highly recommended exchange!",
+        skillTopic: "Python & Machine Learning",
+        createdAt: new Date(Date.now() - 3600000 * 10),
+        updatedAt: new Date(Date.now() - 3600000 * 10)
+    }
+];
+
 let idCounter = 100;
 function generateId() {
     return "65f0" + (Date.now().toString(16) + (++idCounter).toString(16)).padStart(20, "0").slice(-20);
@@ -119,38 +152,7 @@ class MemoryStore {
         this.activeAssessmentSessions = new Map(); // temporary storage during test taking
         this.learningImpacts = new Map(); // stores pre/post session impacts
         this.activeImpactSessions = new Map(); // temporary storage during pre/post test taking
-        this.reviews = new Map([
-            ["65f004000000000000000001", {
-                _id: "65f004000000000000000001",
-                reviewer: "65f001000000000000000002",
-                reviewee: "65f001000000000000000001",
-                rating: 5,
-                feedback: "Fantastic session! Aditi explained React concurrent rendering and custom hooks with crystal clarity.",
-                skillTopic: "React & TypeScript",
-                createdAt: new Date(Date.now() - 3600000 * 18),
-                updatedAt: new Date(Date.now() - 3600000 * 18)
-            }],
-            ["65f004000000000000000002", {
-                _id: "65f004000000000000000002",
-                reviewer: "65f001000000000000000001",
-                reviewee: "65f001000000000000000002",
-                rating: 5,
-                feedback: "Khushnam is an extraordinary backend mentor. We architected a real-time event pipeline in under an hour!",
-                skillTopic: "Node.js & WebSockets",
-                createdAt: new Date(Date.now() - 3600000 * 16),
-                updatedAt: new Date(Date.now() - 3600000 * 16)
-            }],
-            ["65f004000000000000000003", {
-                _id: "65f004000000000000000003",
-                reviewer: "65f001000000000000000004",
-                reviewee: "65f001000000000000000005",
-                rating: 5,
-                feedback: "Marcus broke down neural network fundamentals and NLP pipelines seamlessly. Highly recommended exchange!",
-                skillTopic: "Python & Machine Learning",
-                createdAt: new Date(Date.now() - 3600000 * 10),
-                updatedAt: new Date(Date.now() - 3600000 * 10)
-            }]
-        ]);
+        this.reviews = new Map(initialReviews.map(r => [r._id, { ...r }]));
     }
 
     // Users
@@ -624,6 +626,12 @@ const memoryStore = new MemoryStore();
 
 module.exports = {
     memoryStore,
+    seedData: {
+        users: initialUsers,
+        connections: initialConnections,
+        messages: initialMessages,
+        reviews: initialReviews
+    },
     isMongoActive: () => {
         try {
             const mongoose = require("mongoose");

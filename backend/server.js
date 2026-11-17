@@ -4,8 +4,17 @@ const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
-require("dotenv").config({ path: path.join(__dirname, "../.env") });
+const dotenv = require("dotenv");
+for (const envPath of [path.join(__dirname, ".env"), path.join(__dirname, "../.env")]) {
+    const result = dotenv.config({ path: envPath });
+    if (result && result.parsed) {
+        for (const [key, val] of Object.entries(result.parsed)) {
+            if (val !== "" && val !== undefined) {
+                process.env[key] = val;
+            }
+        }
+    }
+}
 
 const cors = require("cors");                             //cors ko import/load kar rahe hain, taaki frontend aur backend ke beech request allow ho sake
 const User = require("./userModel"); 
@@ -18,7 +27,7 @@ const LearningImpact = require("./learningImpactModel");
 const { skillAssessmentService } = require("./skillAssessmentService");
 const { learningImpactService } = require("./learningImpactService");
 const { setupSocketIO, JWT_SECRET } = require("./socketHandler");
-const { memoryStore, isMongoActive } = require("./memoryStore");
+const { memoryStore, seedData, isMongoActive } = require("./memoryStore");
 
 const PORT = process.env.APP_PORT || 3000;
 const app = express();
@@ -1328,19 +1337,74 @@ app.get("/api/learning-impact/my-reports", verifyAuth, async (req, res) => {
 // CRITICAL: Fail fast if MongoDB is not connected so requests don't hang
 mongoose.set("bufferCommands", false);
 
-if (process.env.MONGODB_URI) {
-    mongoose.connect(process.env.MONGODB_URI)
-        .then(() => {
-            console.log("MongoDB Connected Successfully! 🎉");
-        })
-        .catch((error) => {
-            console.warn("MongoDB Connection Failed ❌ (Demo mode / fallback active):", error.message);
-        });
-} else {
-    console.warn("MONGODB_URI is not set. Database features will run in fallback/in-memory mode if provided or return helpful status.");
+let mongoMemoryServer = null;
+let mongoConnectionMode = "disconnected";
+let lastMongoError = null;
+
+async function seedDatabaseIfEmpty() {
+    try {
+        const userCount = await User.countDocuments();
+        if (userCount === 0) {
+            await User.insertMany(seedData.users);
+            await Connection.insertMany(seedData.connections);
+            await Message.insertMany(seedData.messages);
+            await Review.insertMany(seedData.reviews);
+            console.log("Seeded initial SkillSwap demo data into MongoDB.");
+        }
+    } catch (seedErr) {
+        console.warn("MongoDB seed warning:", seedErr.message);
+    }
 }
 
-// Test route
+async function connectDatabase() {
+    if (process.env.MONGODB_URI) {
+        try {
+            const connectOpts = {
+                serverSelectionTimeoutMS: 8000
+            };
+            try {
+                const parsed = new URL(process.env.MONGODB_URI);
+                if (!parsed.pathname || parsed.pathname === "/") {
+                    connectOpts.dbName = "skillswap";
+                }
+            } catch {}
+            await mongoose.connect(process.env.MONGODB_URI, connectOpts);
+            mongoConnectionMode = "external";
+            lastMongoError = null;
+            console.log("MongoDB Connected Successfully!");
+            await seedDatabaseIfEmpty();
+            return;
+        } catch (error) {
+            lastMongoError = error.message;
+            console.warn("External MONGODB_URI connection failed, falling back to local MongoMemoryServer:", error.message);
+        }
+    }
+
+    try {
+        const { MongoMemoryServer } = require("mongodb-memory-server");
+        mongoMemoryServer = await MongoMemoryServer.create();
+        const uri = mongoMemoryServer.getUri();
+        await mongoose.connect(uri);
+        mongoConnectionMode = "memory-server";
+        console.log("MongoDB Connected Successfully via MongoMemoryServer:", uri);
+        await seedDatabaseIfEmpty();
+    } catch (memErr) {
+        mongoConnectionMode = "memory-store-fallback";
+        console.warn("MongoMemoryServer failed to start, using in-memory fallback store:", memErr.message);
+    }
+}
+
+function normalizeSkillList(value) {
+    if (Array.isArray(value)) {
+        return value.map(s => String(s).trim()).filter(Boolean);
+    }
+    if (typeof value === "string") {
+        return value.split(",").map(s => s.trim()).filter(Boolean);
+    }
+    return [];
+}
+
+// Create user / signup route
 app.post("/api/users", async (req, res) => {
     try {
         const {
@@ -1353,15 +1417,30 @@ app.post("/api/users", async (req, res) => {
             learnSkills
         } = req.body;
 
+        const cleanName = typeof name === "string" ? name.trim() : "";
+        const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+        const cleanPassword = typeof password === "string" ? password : "";
+        const cleanTeachSkills = normalizeSkillList(teachSkills);
+        const cleanLearnSkills = normalizeSkillList(learnSkills);
+
+        if (!cleanName || !cleanEmail || !cleanPassword) {
+            return res.status(400).json({ message: "Name, email, and password are required." });
+        }
+
         if (isMongoActive()) {
+            const existing = await User.findOne({ email: cleanEmail });
+            if (existing) {
+                return res.status(400).json({ message: "User with this email already exists" });
+            }
+
             const user = new User({
-                name,
-                email,
-                password,
-                location,
-                bio,
-                teachSkills,
-                learnSkills
+                name: cleanName,
+                email: cleanEmail,
+                password: cleanPassword,
+                location: typeof location === "string" ? location.trim() : "",
+                bio: typeof bio === "string" ? bio.trim() : "",
+                teachSkills: cleanTeachSkills,
+                learnSkills: cleanLearnSkills
             });
 
             await user.save();
@@ -1379,19 +1458,19 @@ app.post("/api/users", async (req, res) => {
             });
         }
 
-        const existing = memoryStore.findUserByEmail(email);
+        const existing = memoryStore.findUserByEmail(cleanEmail);
         if (existing) {
             return res.status(400).json({ message: "User with this email already exists" });
         }
 
         const user = memoryStore.createUser({
-            name,
-            email,
-            password,
-            location,
-            bio,
-            teachSkills,
-            learnSkills
+            name: cleanName,
+            email: cleanEmail,
+            password: cleanPassword,
+            location: typeof location === "string" ? location.trim() : "",
+            bio: typeof bio === "string" ? bio.trim() : "",
+            teachSkills: cleanTeachSkills,
+            learnSkills: cleanLearnSkills
         });
 
         const token = jwt.sign(
@@ -1407,7 +1486,19 @@ app.post("/api/users", async (req, res) => {
         });
 
     } catch (error) {
-        console.log(error.message);
+        console.error("Create user error:", error.message);
+
+        if (error.code === 11000) {
+            return res.status(400).json({
+                message: "User with this email already exists"
+            });
+        }
+
+        if (error.name === "ValidationError") {
+            return res.status(400).json({
+                message: error.message
+            });
+        }
 
         res.status(500).json({
             message: "Failed to create user"
@@ -1493,7 +1584,8 @@ app.get("/api/health", (req, res) => {
     res.json({
         status: "ok",
         app: "SkillSwap",
-        mongoConnected: mongoose.connection.readyState === 1
+        mongoConnected: mongoose.connection.readyState === 1,
+        mongoMode: mongoConnectionMode
     });
 });
 
@@ -1515,12 +1607,14 @@ app.use((err, req, res, next) => {
 app.post("/api/login", async (req, res) => {
     try {
         const { email, password } = req.body;
+        const cleanEmail = typeof email === "string" ? email.trim() : "";
 
         let user = null;
         if (isMongoActive()) {
-            user = await User.findOne({ email });
+            const escaped = cleanEmail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            user = await User.findOne({ email: { $regex: new RegExp(`^${escaped}$`, "i") } });
         } else {
-            user = memoryStore.findUserByEmail(email);
+            user = memoryStore.findUserByEmail(cleanEmail);
         }
 
         if (!user) {
@@ -1638,3 +1732,21 @@ app.get("/api/users/:id", async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
 });
+
+connectDatabase();
+
+async function shutdown() {
+    try {
+        await mongoose.disconnect();
+        if (mongoMemoryServer) {
+            await mongoMemoryServer.stop();
+        }
+    } catch (e) {
+        // ignore shutdown errors
+    } finally {
+        process.exit(0);
+    }
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
