@@ -69,9 +69,28 @@
     </header>
 
     <!-- Error/Notice Alert Banner -->
-    <div id="session-alert" class="session-alert hidden" style="background:#ef4444; color:white; padding:8px 16px; font-size:0.85rem; display:none; align-items:center; justify-content:space-between;">
+    <div id="session-alert" class="session-alert hidden" role="alert">
         <span id="alert-text">Alert message</span>
-        <button class="alert-close-btn" style="background:transparent; border:none; color:white; cursor:pointer;" onclick="document.getElementById('session-alert').classList.add('hidden')">&times;</button>
+        <button type="button" class="alert-close-btn" id="alert-close-btn" aria-label="Dismiss alert">&times;</button>
+    </div>
+
+    <!-- Real-Time Participants & Session ID Bar -->
+    <div class="session-participants-bar" id="session-participants-bar">
+        <div class="participants-bar-left">
+            <span class="participants-bar-label">Participants:</span>
+            <div class="participants-chips-list" id="participants-chips-list">
+                <span class="participant-status-chip joining">
+                    <span class="chip-dot"></span>
+                    Connecting...
+                </span>
+            </div>
+        </div>
+        <div class="participants-bar-right">
+            <span class="session-id-pill" id="session-id-pill" title="Click to copy Session ID">
+                <span>ID:</span>
+                <code id="session-id-short">---</code>
+            </span>
+        </div>
     </div>
 
     <!-- Main Live Session Workspace -->
@@ -90,6 +109,7 @@
                     <h3 id="remote-name" style="font-size:1.2rem; color:white;">Skill Partner</h3>
                     <p class="placeholder-status" id="remote-status-msg" style="font-size:0.9rem; color:#94a3b8;">Waiting for partner to connect...</p>
                     <div class="loading-spinner" id="remote-spinner" style="width:28px; height:28px; border:3px solid rgba(255,255,255,0.2); border-top-color:var(--primary); border-radius:50%; animation:spin 1s linear infinite;"></div>
+                    <button type="button" class="modal-btn primary-btn hidden" id="btn-retry-webrtc" style="padding:7px 14px; font-size:0.82rem; margin-top:4px;">Reconnect Video</button>
                 </div>
 
                 <!-- Video Card Overlay -->
@@ -112,7 +132,7 @@
                 <div class="video-placeholder hidden" id="local-placeholder" style="height:100%;">
                     <div class="avatar-circle" id="local-avatar" style="width:44px; height:44px; font-size:1.1rem;">You</div>
                     <h3 id="local-name" style="font-size:0.85rem; color:white;">You</h3>
-                    <p class="placeholder-status" style="font-size:0.75rem; color:#94a3b8;">Camera is off</p>
+                    <p class="placeholder-status" id="local-placeholder-status" style="font-size:0.75rem; color:#94a3b8;">Camera is off</p>
                 </div>
 
                 <!-- Local Video Card Overlay -->
@@ -130,17 +150,23 @@
         </div>
 
         <!-- In-Call Chat Drawer -->
-        <aside class="in-call-chat-drawer hidden" id="in-call-chat-drawer">
+        <aside class="in-call-chat-drawer hidden" id="in-call-chat-drawer" aria-label="Live Session Chat">
             <div class="drawer-header">
-                <h3 style="font-size:1rem; color:white;">Session Notes & Chat</h3>
-                <button class="drawer-close-btn" id="close-drawer-btn" style="background:transparent; border:none; color:#94a3b8; font-size:1.2rem; cursor:pointer;">&times;</button>
+                <div>
+                    <h3 style="font-size:1rem; color:white; margin:0;">Live Session Chat</h3>
+                    <span id="drawer-chat-subtitle" style="font-size:0.72rem; color:#94a3b8;">Real-time session messaging</span>
+                </div>
+                <button type="button" class="drawer-close-btn" id="close-drawer-btn" aria-label="Close chat drawer">&times;</button>
             </div>
             <div class="drawer-messages" id="drawer-messages">
-                <p class="drawer-hint" style="font-size:0.85rem; color:#94a3b8;">Message your partner in real-time during this call.</p>
+                <div class="drawer-loading-state" id="drawer-loading-state">Loading session chat...</div>
+            </div>
+            <div class="drawer-typing-indicator hidden" id="drawer-typing-indicator">
+                <span id="drawer-typing-text">Partner is typing...</span>
             </div>
             <form class="drawer-input-form" id="drawer-input-form">
-                <input type="text" id="drawer-msg-input" placeholder="Type a message or note..." autocomplete="off">
-                <button type="submit" class="btn btn-primary btn-sm" style="padding:0 12px;">
+                <textarea id="drawer-msg-input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for new line)" autocomplete="off"></textarea>
+                <button type="submit" id="drawer-send-btn" class="btn btn-primary btn-sm" style="padding:0 12px; height:38px; flex-shrink:0;" aria-label="Send message">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="15" height="15"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                 </button>
             </form>
@@ -153,33 +179,34 @@
         <div class="dock-wrapper">
 
             <!-- Toggle Microphone -->
-            <button class="control-btn active" id="btn-toggle-mic" title="Mute/Unmute Microphone">
+            <button type="button" class="control-btn active" id="btn-toggle-mic" title="Mute/Unmute Microphone">
                 <span class="btn-icon">🎤</span>
                 <span class="btn-label" id="label-mic">Mute</span>
             </button>
 
             <!-- Toggle Camera -->
-            <button class="control-btn active" id="btn-toggle-cam" title="Turn Camera On/Off">
+            <button type="button" class="control-btn active" id="btn-toggle-cam" title="Turn Camera On/Off">
                 <span class="btn-icon">📷</span>
                 <span class="btn-label" id="label-cam">Stop Video</span>
             </button>
 
             <!-- Toggle Screen Share -->
-            <button class="control-btn" id="btn-toggle-screen" title="Share Screen">
+            <button type="button" class="control-btn" id="btn-toggle-screen" title="Share Screen">
                 <span class="btn-icon">🖥️</span>
                 <span class="btn-label" id="label-screen">Share Screen</span>
             </button>
 
             <!-- Toggle In-Call Chat Drawer -->
-            <button class="control-btn" id="btn-toggle-chat" title="Session Chat">
+            <button type="button" class="control-btn" id="btn-toggle-chat" title="Live Session Chat" style="position:relative;">
                 <span class="btn-icon">💬</span>
                 <span class="btn-label">Chat</span>
+                <span class="chat-unread-badge hidden" id="chat-unread-badge">0</span>
             </button>
 
             <!-- End / Leave Session Button -->
-            <button class="control-btn end-call" id="btn-end-call" title="End Live Session">
+            <button type="button" class="control-btn end-call" id="btn-end-call" title="End Live Session">
                 <span style="font-size:1.1rem; margin-right:6px;">✕</span>
-                <span style="font-size:0.9rem; font-weight:700;">End Call</span>
+                <span id="btn-end-call-label" style="font-size:0.9rem; font-weight:700;">End Session</span>
             </button>
 
         </div>
@@ -188,18 +215,44 @@
     <!-- Permission Denied Guidance Modal -->
     <div class="modal-backdrop hidden" id="permission-modal">
         <div class="modal-card">
-            <div class="modal-icon">🔒</div>
-            <h2>Camera & Microphone Required</h2>
-            <p>SkillSwap needs permission to access your camera and microphone so you can teach and learn live.</p>
+            <div class="modal-icon">🎥</div>
+            <h2>Camera & Microphone Notice</h2>
+            <p id="permission-modal-desc">Could not access your camera/microphone. You can grant permissions to stream video/audio, or continue in chat-only mode.</p>
             <div class="modal-instructions">
-                <p>1. Look at your browser address bar.</p>
-                <p>2. Click the lock / camera permissions icon on the left.</p>
-                <p>3. Set Camera and Microphone to <strong>"Allow"</strong>.</p>
-                <p>4. Click <strong>"Retry Permissions"</strong> below.</p>
+                <p>1. Check your browser address bar camera/mic icon.</p>
+                <p>2. Set Camera and Microphone to <strong>"Allow"</strong> if you have devices attached.</p>
+                <p>3. Click <strong>"Retry Permissions"</strong> or <strong>"Continue Without Camera"</strong> to join chat.</p>
             </div>
+            <div class="modal-actions" style="flex-wrap:wrap;">
+                <button type="button" class="modal-btn primary-btn" id="retry-permission-btn">Retry Permissions</button>
+                <button type="button" class="modal-btn secondary-btn" id="continue-without-media-btn">Continue Without Camera</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- In-UI Confirmation Modal (Leave vs End Session) -->
+    <div class="modal-backdrop hidden" id="confirm-action-modal">
+        <div class="modal-card" style="max-width:420px;">
+            <div class="modal-icon" id="confirm-modal-icon">⚠️</div>
+            <h2 id="confirm-modal-title">Confirm Action</h2>
+            <p id="confirm-modal-message">Are you sure?</p>
             <div class="modal-actions">
-                <button class="modal-btn primary-btn" id="retry-permission-btn">Retry Permissions</button>
-                <button class="modal-btn secondary-btn" onclick="window.location.href='connections.html'">Cancel & Exit</button>
+                <button type="button" class="modal-btn secondary-btn" id="confirm-cancel-btn">Cancel</button>
+                <button type="button" class="modal-btn primary-btn" id="confirm-proceed-btn" style="background:#ef4444;">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Left Session Temporary Modal (Allows Rejoin) -->
+    <div class="modal-backdrop hidden" id="session-left-modal">
+        <div class="modal-card" style="max-width:440px;">
+            <div class="modal-icon">👋</div>
+            <h2>You Left the Session</h2>
+            <p id="session-left-text">You exited the live room. The session remains active until the host ends it.</p>
+            <div class="modal-actions" style="flex-wrap:wrap;">
+                <button type="button" class="modal-btn primary-btn" id="rejoin-session-btn">Rejoin Session</button>
+                <button type="button" class="modal-btn secondary-btn" onclick="window.location.href='connections.html'">Connections Hub</button>
+                <button type="button" class="modal-btn secondary-btn" onclick="window.location.href='dashboard.html'">Dashboard</button>
             </div>
         </div>
     </div>
@@ -252,8 +305,8 @@
             </div>
 
             <div class="modal-actions" style="display:flex; gap:10px;">
-                <button class="modal-btn secondary-btn" style="flex:1;" onclick="window.location.href='connections.html'">Connections Hub</button>
-                <button class="modal-btn secondary-btn" style="flex:1;" onclick="window.location.href='dashboard.html'">Go to Dashboard</button>
+                <button type="button" class="modal-btn secondary-btn" style="flex:1;" onclick="window.location.href='connections.html'">Connections Hub</button>
+                <button type="button" class="modal-btn secondary-btn" style="flex:1;" onclick="window.location.href='dashboard.html'">Go to Dashboard</button>
             </div>
         </div>
     </div>

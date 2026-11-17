@@ -288,13 +288,22 @@ class MemoryStore {
         return list;
     }
 
-    createMessage(senderId, receiverId, connectionId, text) {
+    createMessage(senderId, receiverId, connectionId, text, options = {}) {
+        const { sessionId = null, clientMessageId = null } = options;
+
+        if (clientMessageId && sessionId) {
+            const existing = this.findSessionMessageByClientId(sessionId, senderId, clientMessageId);
+            if (existing) return existing;
+        }
+
         const id = generateId();
         const msg = {
             _id: id,
             sender: String(senderId),
             receiver: String(receiverId),
             connection: String(connectionId),
+            sessionId: sessionId ? String(sessionId) : null,
+            clientMessageId: clientMessageId ? String(clientMessageId) : null,
             message: String(text).trim(),
             read: false,
             createdAt: new Date(),
@@ -302,13 +311,41 @@ class MemoryStore {
         };
         this.messages.set(id, msg);
 
-        const senderObj = this.findUserById(senderId);
-        const receiverObj = this.findUserById(receiverId);
+        return this.populateMessage(msg);
+    }
+
+    populateMessage(msg) {
+        const senderObj = this.findUserById(msg.sender);
+        const receiverObj = this.findUserById(msg.receiver);
         return {
             ...msg,
-            sender: senderObj ? { _id: senderObj._id, name: senderObj.name, email: senderObj.email } : senderId,
-            receiver: receiverObj ? { _id: receiverObj._id, name: receiverObj.name, email: receiverObj.email } : receiverId
+            sender: senderObj ? { _id: senderObj._id, name: senderObj.name, email: senderObj.email } : msg.sender,
+            receiver: receiverObj ? { _id: receiverObj._id, name: receiverObj.name, email: receiverObj.email } : msg.receiver
         };
+    }
+
+    findSessionMessageByClientId(sessionId, senderId, clientMessageId) {
+        const sId = String(sessionId);
+        const uId = String(senderId);
+        const cId = String(clientMessageId);
+        for (const m of this.messages.values()) {
+            if (m.sessionId === sId && m.sender === uId && m.clientMessageId === cId) {
+                return this.populateMessage(m);
+            }
+        }
+        return null;
+    }
+
+    getSessionMessages(sessionId) {
+        const sId = String(sessionId);
+        const list = [];
+        for (const m of this.messages.values()) {
+            if (m.sessionId === sId) {
+                list.push(this.populateMessage(m));
+            }
+        }
+        list.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+        return list;
     }
 
     markMessagesAsRead(connectionId, receiverUserId) {
@@ -323,11 +360,11 @@ class MemoryStore {
     }
 
     // Live Sessions
-    createOrGetLiveSession(connectionId, hostId, participantId) {
+    createOrGetLiveSession(connectionId, hostId, participantId, skillTopic = "") {
         const cId = String(connectionId);
         for (const s of this.liveSessions.values()) {
             if (s.connectionId === cId && s.status === "live") {
-                return this.populateSession(s);
+                return { session: this.populateSession(s), created: false };
             }
         }
 
@@ -337,13 +374,26 @@ class MemoryStore {
             host: String(hostId),
             participant: String(participantId),
             connectionId: cId,
+            skillTopic: String(skillTopic || ""),
             status: "live",
             startedAt: new Date(),
             createdAt: new Date(),
             updatedAt: new Date()
         };
         this.liveSessions.set(id, session);
-        return this.populateSession(session);
+        return { session: this.populateSession(session), created: true };
+    }
+
+    getActiveLiveSessionsForUser(userId) {
+        const uId = String(userId);
+        const list = [];
+        for (const s of this.liveSessions.values()) {
+            if (s.status === "live" && (s.host === uId || s.participant === uId)) {
+                list.push(this.populateSession(s));
+            }
+        }
+        list.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt));
+        return list;
     }
 
     getLiveSessionById(id) {

@@ -17,6 +17,17 @@ const messageSchema = new mongoose.Schema({
         required: true,
         index: true
     },
+    sessionId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "LiveSession",
+        default: null,
+        index: true
+    },
+    clientMessageId: {
+        type: String,
+        default: null,
+        index: true
+    },
     message: {
         type: String,
         required: true,

@@ -2803,6 +2803,10 @@ input::placeholder, textarea::placeholder {
     background: var(--warning);
 }
 
+.status-indicator-dot.error {
+    background: #ef4444;
+}
+
 .leave-btn-top {
     background: rgba(239, 68, 68, 0.15);
     color: #f87171;
@@ -2818,6 +2822,145 @@ input::placeholder, textarea::placeholder {
 .leave-btn-top:hover {
     background: #ef4444;
     color: white;
+}
+
+/* Session Alert Banner */
+.session-alert {
+    background: #ef4444;
+    color: #ffffff;
+    padding: 8px 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.session-alert.warning {
+    background: #d97706;
+}
+
+.session-alert.success {
+    background: #059669;
+}
+
+.session-alert.hidden {
+    display: none;
+}
+
+.alert-close-btn {
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+/* Real-Time Participants Presence Bar */
+.session-participants-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px var(--space-6);
+    background: rgba(15, 23, 42, 0.72);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.participants-bar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.participants-bar-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #94a3b8;
+}
+
+.participants-chips-list {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.participant-status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 0.78rem;
+    color: #e2e8f0;
+}
+
+.participant-status-chip .chip-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #64748b;
+}
+
+.participant-status-chip.online .chip-dot {
+    background: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+}
+
+.participant-status-chip.joining .chip-dot,
+.participant-status-chip.disconnected .chip-dot {
+    background: #f59e0b;
+}
+
+.participant-status-chip .chip-state {
+    font-size: 0.7rem;
+    color: #94a3b8;
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+    padding-left: 6px;
+}
+
+.participant-status-chip.online .chip-state {
+    color: #34d399;
+}
+
+.participant-status-chip.disconnected .chip-state {
+    color: #fbbf24;
+}
+
+.session-id-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #94a3b8;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.session-id-pill:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+.session-id-pill code {
+    color: #e2e8f0;
+    font-family: monospace;
 }
 
 .session-main {
@@ -2852,18 +2995,33 @@ input::placeholder, textarea::placeholder {
 }
 
 .remote-card video {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
+    z-index: 1;
 }
 
 .video-placeholder {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background: #0f172a;
+    padding: var(--space-4);
+    text-align: center;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: var(--space-3);
     color: #94a3b8;
+}
+
+.video-placeholder.hidden,
+.loading-spinner.hidden,
+.modal-btn.hidden {
+    display: none !important;
 }
 
 .avatar-circle {
@@ -2894,17 +3052,20 @@ input::placeholder, textarea::placeholder {
 }
 
 .local-card video {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
     transform: scaleX(-1);
+    z-index: 1;
 }
 
 .video-overlay {
     position: absolute;
     bottom: 12px;
     left: 12px;
-    z-index: 2;
+    z-index: 3;
 }
 
 .participant-badge {
@@ -3023,19 +3184,142 @@ input::placeholder, textarea::placeholder {
     flex: 1;
     overflow-y: auto;
     padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.drawer-loading-state {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 0.82rem;
+    padding: 16px 8px;
+}
+
+.drawer-typing-indicator {
+    padding: 4px var(--space-4);
+    font-size: 0.75rem;
+    color: #94a3b8;
+    font-style: italic;
+}
+
+.drawer-typing-indicator.hidden {
+    display: none;
+}
+
+.session-chat-msg {
+    padding: 8px 12px;
+    border-radius: 10px;
+    font-size: 0.84rem;
+    line-height: 1.42;
+    max-width: 86%;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+
+.session-chat-msg.mine {
+    margin-left: auto;
+    background: var(--primary);
+    color: #ffffff;
+}
+
+.session-chat-msg.theirs {
+    margin-right: auto;
+    background: #1e293b;
+    color: #f1f5f9;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.session-chat-msg-meta {
+    font-size: 0.7rem;
+    opacity: 0.8;
+    margin-bottom: 3px;
+}
+
+.session-chat-msg-body {
+    white-space: pre-wrap;
+}
+
+.session-chat-msg-status {
+    margin-top: 4px;
+    font-size: 0.68rem;
+    opacity: 0.85;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.session-chat-msg.is-failed {
+    border: 1px solid #f87171;
+}
+
+.session-chat-msg.is-failed .session-chat-msg-status {
+    color: #fecaca;
+}
+
+.chat-retry-btn {
+    background: rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    color: #ffffff;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.chat-retry-btn:hover {
+    background: rgba(255, 255, 255, 0.32);
+}
+
+.chat-unread-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--radius-full);
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 0.68rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.chat-unread-badge.hidden {
+    display: none;
 }
 
 .drawer-input-form {
     padding: var(--space-3);
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     display: flex;
+    align-items: flex-end;
     gap: 8px;
 }
 
-.drawer-input-form input {
+.drawer-input-form input,
+.drawer-input-form textarea {
+    flex: 1;
     background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: var(--radius-md);
     color: white;
+    font-family: inherit;
+    font-size: 0.85rem;
+    padding: 8px 10px;
+    resize: none;
+    min-height: 38px;
+    max-height: 110px;
+    line-height: 1.35;
+}
+
+.drawer-input-form textarea::placeholder {
+    color: #94a3b8;
 }
 
 .control-btn.muted {
@@ -3312,6 +3596,34 @@ input::placeholder, textarea::placeholder {
     .chat-main.mobile-hidden {
         display: none;
     }
+
+    .session-header {
+        height: auto;
+        min-height: 58px;
+        padding: 8px 12px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .session-header-center {
+        order: 3;
+        width: 100%;
+    }
+
+    .session-participants-bar {
+        padding: 8px 12px;
+    }
+}
+
+@media (max-width: 768px) {
+    .in-call-chat-drawer {
+        width: 100%;
+        border-left: none;
+    }
+
+    .connection-status-pill {
+        display: none;
+    }
 }
 
 @media (max-width: 480px) {
@@ -3342,6 +3654,15 @@ input::placeholder, textarea::placeholder {
         height: 95px;
         bottom: 12px;
         right: 12px;
+    }
+
+    .dock-wrapper {
+        gap: 8px;
+    }
+
+    .control-btn {
+        width: 46px;
+        height: 46px;
     }
 }
 

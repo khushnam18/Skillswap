@@ -826,8 +826,26 @@ async function loadAcceptedConnections(userId) {
     if (!container) return;
 
     try {
-        const response = await fetch(`/api/accepted-connections/${userId}`);
-        const connections = await response.json();
+        const token = localStorage.getItem("token");
+        const [connRes, activeSessionsRes] = await Promise.all([
+            fetch(`/api/accepted-connections/${userId}`),
+            token
+                ? fetch("/api/live-sessions", { headers: { "Authorization": `Bearer ${token}` } }).catch(() => null)
+                : Promise.resolve(null)
+        ]);
+
+        const connections = await connRes.json();
+        const activeSessions = (activeSessionsRes && activeSessionsRes.ok)
+            ? await activeSessionsRes.json().catch(() => [])
+            : [];
+
+        const activeSessionByConn = new Map();
+        if (Array.isArray(activeSessions)) {
+            activeSessions.forEach(s => {
+                const cId = s.connectionId && typeof s.connectionId === "object" ? s.connectionId._id : s.connectionId;
+                if (cId) activeSessionByConn.set(String(cId), s);
+            });
+        }
 
         container.innerHTML = "";
 
@@ -848,6 +866,7 @@ async function loadAcceptedConnections(userId) {
         connections.forEach(connection => {
             const otherUser = connection.sender._id === userId ? connection.receiver : connection.sender;
             const initials = getUserInitials(otherUser.name);
+            const activeSession = activeSessionByConn.get(String(connection._id));
 
             const teachBadges = otherUser.teachSkills && otherUser.teachSkills.length > 0
                 ? otherUser.teachSkills.map(s => `<span class="skill-badge">${escapeHtml(s)}</span>`).join(" ")
@@ -856,6 +875,20 @@ async function loadAcceptedConnections(userId) {
             const learnBadges = otherUser.learnSkills && otherUser.learnSkills.length > 0
                 ? otherUser.learnSkills.map(s => `<span class="badge badge-learn">${escapeHtml(s)}</span>`).join(" ")
                 : "";
+
+            const liveActionHtml = activeSession
+                ? `
+                    <a href="live-session.html?sessionId=${activeSession._id}" class="btn btn-success action-btn live-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                        Join Live Session
+                    </a>
+                `
+                : `
+                    <button class="btn btn-primary action-btn live-btn" onclick="startLiveSession('${connection._id}', '${otherUser._id}', this)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                        Start Session
+                    </button>
+                `;
 
             const card = document.createElement("div");
             card.className = "connection-card";
@@ -866,6 +899,7 @@ async function loadAcceptedConnections(userId) {
                         <h3>${escapeHtml(otherUser.name)}</h3>
                         <p>${escapeHtml(otherUser.email)}</p>
                     </div>
+                    ${activeSession ? `<span class="live-pill" style="margin-left:auto;"><span class="live-dot"></span>LIVE</span>` : ""}
                 </div>
 
                 ${teachBadges ? `
@@ -887,10 +921,7 @@ async function loadAcceptedConnections(userId) {
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
                         Messages
                     </a>
-                    <button class="btn btn-primary action-btn live-btn" onclick="startLiveSession('${connection._id}', '${otherUser._id}')">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
-                        Start Session
-                    </button>
+                    ${liveActionHtml}
                 </div>
             `;
             container.appendChild(card);
@@ -910,7 +941,11 @@ async function loadAcceptedConnections(userId) {
 // --------------------------------------------------------
 // 10. Live Session Initiation
 // --------------------------------------------------------
-async function startLiveSession(connectionId, participantId) {
+let liveSessionRequestInFlight = false;
+
+async function startLiveSession(connectionId, participantId, triggerBtn = null) {
+    if (liveSessionRequestInFlight) return;
+
     const token = localStorage.getItem("token");
     if (!token) {
         showToast("Please log in to start a live session", "error");
@@ -918,6 +953,13 @@ async function startLiveSession(connectionId, participantId) {
             window.location.href = "login.html";
         }, 500);
         return;
+    }
+
+    liveSessionRequestInFlight = true;
+    const originalHtml = triggerBtn ? triggerBtn.innerHTML : null;
+    if (triggerBtn) {
+        triggerBtn.disabled = true;
+        triggerBtn.textContent = "Starting...";
     }
 
     try {
@@ -932,6 +974,13 @@ async function startLiveSession(connectionId, participantId) {
 
         const data = await response.json();
 
+        if (response.status === 401) {
+            showToast("Session expired. Please log in again.", "error");
+            localStorage.removeItem("token");
+            setTimeout(() => { window.location.href = "login.html"; }, 600);
+            return;
+        }
+
         if (response.ok && data.session) {
             window.location.href = `live-session.html?sessionId=${data.session._id}`;
         } else {
@@ -940,6 +989,12 @@ async function startLiveSession(connectionId, participantId) {
     } catch (err) {
         console.error("Live session start error:", err);
         showToast("Unable to start live session. Please check if server is running.", "error");
+    } finally {
+        liveSessionRequestInFlight = false;
+        if (triggerBtn && originalHtml !== null) {
+            triggerBtn.disabled = false;
+            triggerBtn.innerHTML = originalHtml;
+        }
     }
 }
 

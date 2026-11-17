@@ -7,6 +7,7 @@ let acceptedConnections = [];
 let activeConnection = null;
 let activePartner = null;
 let onlineStatusMap = {};
+let activeSessionsByConnection = new Map();
 let typingTimeout = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -52,8 +53,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const startSessionBtn = document.getElementById("start-session-btn");
     if (startSessionBtn) {
         startSessionBtn.addEventListener("click", () => {
-            if (activeConnection && activePartner) {
-                startLiveSession(activeConnection._id, activePartner._id);
+            if (!activeConnection || !activePartner) return;
+            const activeSess = activeSessionsByConnection.get(String(activeConnection._id));
+            if (activeSess && activeSess._id) {
+                window.location.href = `live-session.html?sessionId=${activeSess._id}`;
+            } else {
+                startLiveSession(activeConnection._id, activePartner._id, startSessionBtn);
             }
         });
     }
@@ -68,6 +73,7 @@ function initSocketConnection() {
         auth: {
             token: authToken
         },
+        transports: ["websocket", "polling"],
         reconnection: true,
         reconnectionAttempts: 10,
         reconnectionDelay: 1500
@@ -130,9 +136,35 @@ function initSocketConnection() {
         }
     });
 
+    // Real-time Live Session discovery events
+    socket.on("liveSessionStarted", ({ session }) => {
+        if (!session || !session._id) return;
+        const cId = session.connectionId && typeof session.connectionId === "object"
+            ? session.connectionId._id
+            : session.connectionId;
+        if (cId) {
+            activeSessionsByConnection.set(String(cId), session);
+            updateHeaderLiveSessionButton();
+        }
+    });
+
+    socket.on("sessionEnded", ({ sessionId: endedId }) => {
+        for (const [cId, sess] of activeSessionsByConnection.entries()) {
+            if (String(sess._id) === String(endedId)) {
+                activeSessionsByConnection.delete(cId);
+            }
+        }
+        updateHeaderLiveSessionButton();
+    });
+
     // Chat error feedback
     socket.on("chatError", (err) => {
-        alert("Chat notice: " + (err.message || "Failed to send message"));
+        const banner = document.getElementById("connection-banner");
+        const bannerText = document.getElementById("banner-text");
+        if (banner && bannerText) {
+            bannerText.textContent = err.message || "Failed to send message";
+            banner.classList.remove("hidden");
+        }
     });
 }
 
@@ -142,11 +174,25 @@ async function loadConnections() {
     const countBadge = document.getElementById("connections-count");
 
     try {
-        const response = await fetch(`/api/accepted-connections/${currentUser._id}`);
-        if (!response.ok) throw new Error("Failed to fetch connections");
+        const [connResponse, sessionsResponse] = await Promise.all([
+            fetch(`/api/accepted-connections/${currentUser._id}`),
+            fetch("/api/live-sessions", { headers: { "Authorization": `Bearer ${authToken}` } }).catch(() => null)
+        ]);
+        if (!connResponse.ok) throw new Error("Failed to fetch connections");
 
-        acceptedConnections = await response.json();
+        acceptedConnections = await connResponse.json();
         countBadge.textContent = acceptedConnections.length;
+
+        activeSessionsByConnection.clear();
+        if (sessionsResponse && sessionsResponse.ok) {
+            const activeSessions = await sessionsResponse.json().catch(() => []);
+            if (Array.isArray(activeSessions)) {
+                activeSessions.forEach(s => {
+                    const cId = s.connectionId && typeof s.connectionId === "object" ? s.connectionId._id : s.connectionId;
+                    if (cId) activeSessionsByConnection.set(String(cId), s);
+                });
+            }
+        }
 
         if (acceptedConnections.length === 0) {
             listContainer.innerHTML = `
@@ -261,6 +307,7 @@ async function selectConversation(connection) {
     const teachSkills = (activePartner.teachSkills || []).join(", ");
     const learnSkills = (activePartner.learnSkills || []).join(", ");
     document.getElementById("active-user-skills").textContent = `Teaches: ${teachSkills || 'N/A'} • Wants: ${learnSkills || 'N/A'}`;
+    updateHeaderLiveSessionButton();
 
     // Load message history from REST API
     await loadMessages(connection._id);
@@ -488,13 +535,42 @@ function filterConversations() {
     });
 }
 
+function updateHeaderLiveSessionButton() {
+    const btn = document.getElementById("start-session-btn");
+    if (!btn || !activeConnection) return;
+
+    const activeSess = activeSessionsByConnection.get(String(activeConnection._id));
+    if (activeSess) {
+        btn.classList.remove("btn-primary");
+        btn.classList.add("btn-success");
+        btn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            Join Live Session
+        `;
+        btn.title = "Join Active Live Session";
+    } else {
+        btn.classList.remove("btn-success");
+        btn.classList.add("btn-primary");
+        btn.innerHTML = `
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            Start Session
+        `;
+        btn.title = "Start Live Video Session";
+    }
+}
+
+let chatLiveSessionInFlight = false;
+
 // Trigger Live Session initiation
-async function startLiveSession(connectionId, participantId) {
+async function startLiveSession(connectionId, participantId, triggerBtn = null) {
+    if (chatLiveSessionInFlight) return;
     if (!authToken) {
-        alert("Please login first.");
         window.location.href = "login.html";
         return;
     }
+
+    chatLiveSessionInFlight = true;
+    if (triggerBtn) triggerBtn.disabled = true;
 
     try {
         const response = await fetch("/api/live-sessions", {
@@ -510,11 +586,18 @@ async function startLiveSession(connectionId, participantId) {
         if (response.ok && data.session) {
             window.location.href = `live-session.html?sessionId=${data.session._id}`;
         } else {
-            alert(data.message || "Failed to start live session");
+            const banner = document.getElementById("connection-banner");
+            const bannerText = document.getElementById("banner-text");
+            if (banner && bannerText) {
+                bannerText.textContent = data.message || "Failed to start live session";
+                banner.classList.remove("hidden");
+            }
         }
     } catch (err) {
         console.error("Live session start error:", err);
-        alert("Server error starting live session");
+    } finally {
+        chatLiveSessionInFlight = false;
+        if (triggerBtn) triggerBtn.disabled = false;
     }
 }
 

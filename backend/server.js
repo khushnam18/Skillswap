@@ -46,11 +46,15 @@ const io = new Server(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST", "PUT"]
-    }
+    },
+    transports: ["websocket", "polling"],
+    pingTimeout: 25000,
+    pingInterval: 10000,
+    allowEIO3: true
 });
 
 // Setup Socket.IO real-time handlers
-setupSocketIO(io);
+const socketManager = setupSocketIO(io);
 
 // Authentication Middleware for Protected REST APIs
 const verifyAuth = async (req, res, next) => {
@@ -310,17 +314,99 @@ app.put("/api/messages/read/:connectionId", verifyAuth, async (req, res) => {
 });
 
 // ==========================================
-// REST APIS FOR LIVE SESSIONS (WEBRTC)
+// REST APIS FOR LIVE SESSIONS (WEBRTC & LIVE CHAT)
 // ==========================================
+
+const pendingSessionCreations = new Map();
+
+function extractId(val) {
+    if (!val) return "";
+    if (typeof val === "object" && val._id) return val._id.toString();
+    return val.toString();
+}
+
+// Get WebRTC ICE servers (STUN + optional TURN relay from env)
+app.get("/api/live-sessions/ice-servers", verifyAuth, async (req, res) => {
+    const iceServers = [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun.cloudflare.com:3478" }
+    ];
+
+    if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+        const urls = process.env.TURN_URLS.split(",").map(u => u.trim()).filter(Boolean);
+        if (urls.length > 0) {
+            iceServers.push({
+                urls,
+                username: process.env.TURN_USERNAME,
+                credential: process.env.TURN_CREDENTIAL
+            });
+        }
+    } else if (process.env.METERED_DOMAIN && process.env.METERED_SECRET_KEY) {
+        try {
+            const resp = await fetch(`https://${process.env.METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${encodeURIComponent(process.env.METERED_SECRET_KEY)}`);
+            if (resp.ok) {
+                const meteredServers = await resp.json();
+                if (Array.isArray(meteredServers)) {
+                    iceServers.push(...meteredServers);
+                }
+            }
+        } catch (err) {
+            console.warn("Metered TURN lookup skipped:", err.message);
+        }
+    }
+
+    res.json({ iceServers });
+});
+
+// Get all active live sessions for the logged-in user (discovery)
+app.get("/api/live-sessions", verifyAuth, async (req, res) => {
+    try {
+        const currentUserId = req.user.userId;
+
+        if (isMongoActive()) {
+            const sessions = await LiveSession.find({
+                status: "live",
+                $or: [{ host: currentUserId }, { participant: currentUserId }]
+            })
+                .sort({ startedAt: -1 })
+                .populate("host", "name email teachSkills learnSkills")
+                .populate("participant", "name email teachSkills learnSkills")
+                .populate("connectionId");
+
+            const enriched = sessions.map(s => {
+                const obj = s.toObject();
+                obj.participants = socketManager.getSessionParticipants(s._id);
+                return obj;
+            });
+
+            return res.json(enriched);
+        }
+
+        const sessions = memoryStore.getActiveLiveSessionsForUser(currentUserId).map(s => ({
+            ...s,
+            participants: socketManager.getSessionParticipants(s._id)
+        }));
+        res.json(sessions);
+    } catch (error) {
+        console.log("Fetch active live sessions error:", error.message);
+        res.status(500).json({ message: "Failed to fetch live sessions" });
+    }
+});
 
 // Create or get active live session for an accepted connection
 app.post("/api/live-sessions", verifyAuth, async (req, res) => {
     try {
-        const { connectionId, participantId } = req.body;
+        const { connectionId, participantId, skillTopic } = req.body;
         const currentUserId = req.user.userId;
 
         if (!connectionId || !participantId) {
             return res.status(400).json({ message: "connectionId and participantId are required" });
+        }
+
+        if (isMongoActive() && (!mongoose.Types.ObjectId.isValid(connectionId) || !mongoose.Types.ObjectId.isValid(participantId))) {
+            return res.status(400).json({ message: "Invalid connectionId or participantId" });
         }
 
         let connection = null;
@@ -338,51 +424,127 @@ app.post("/api/live-sessions", verifyAuth, async (req, res) => {
             return res.status(403).json({ message: "Cannot start session: Connection is not accepted" });
         }
 
-        const p1 = (connection.sender._id || connection.sender).toString();
-        const p2 = (connection.receiver._id || connection.receiver).toString();
+        const p1 = extractId(connection.sender);
+        const p2 = extractId(connection.receiver);
 
         const isSender = (currentUserId === p1 || currentUserId === p2);
-        const isReceiver = (participantId === p1 || participantId === p2);
+        const isReceiver = (String(participantId) === p1 || String(participantId) === p2);
 
-        if (!isSender || !isReceiver || currentUserId === participantId) {
+        if (!isSender || !isReceiver || currentUserId === String(participantId)) {
             return res.status(403).json({ message: "Unauthorized: Invalid session participants" });
         }
 
-        if (isMongoActive()) {
-            let activeSession = await LiveSession.findOne({
-                connectionId,
-                status: "live"
-            }).populate("host", "name email teachSkills learnSkills")
-              .populate("participant", "name email teachSkills learnSkills");
+        const lockKey = String(connectionId);
+        while (pendingSessionCreations.has(lockKey)) {
+            await pendingSessionCreations.get(lockKey);
+        }
 
-            if (!activeSession) {
-                activeSession = await LiveSession.create({
-                    host: currentUserId,
-                    participant: participantId,
+        let resolveLock;
+        const lockPromise = new Promise(resolve => { resolveLock = resolve; });
+        pendingSessionCreations.set(lockKey, lockPromise);
+
+        try {
+            let activeSession = null;
+            let created = false;
+
+            if (isMongoActive()) {
+                activeSession = await LiveSession.findOne({
                     connectionId,
-                    status: "live",
-                    startedAt: new Date()
-                });
-
-                activeSession = await LiveSession.findById(activeSession._id)
+                    status: "live"
+                })
                     .populate("host", "name email teachSkills learnSkills")
-                    .populate("participant", "name email teachSkills learnSkills");
+                    .populate("participant", "name email teachSkills learnSkills")
+                    .populate("connectionId");
+
+                if (!activeSession) {
+                    const newDoc = await LiveSession.create({
+                        host: currentUserId,
+                        participant: participantId,
+                        connectionId,
+                        skillTopic: typeof skillTopic === "string" ? skillTopic.trim() : "",
+                        status: "live",
+                        startedAt: new Date()
+                    });
+
+                    activeSession = await LiveSession.findById(newDoc._id)
+                        .populate("host", "name email teachSkills learnSkills")
+                        .populate("participant", "name email teachSkills learnSkills")
+                        .populate("connectionId");
+                    created = true;
+                }
+            } else {
+                const result = memoryStore.createOrGetLiveSession(connectionId, currentUserId, participantId, skillTopic || "");
+                activeSession = result.session;
+                created = result.created;
+            }
+
+            if (created && activeSession) {
+                const payload = { session: activeSession };
+                io.to("user_" + currentUserId).emit("liveSessionStarted", payload);
+                io.to("user_" + String(participantId)).emit("liveSessionStarted", payload);
             }
 
             return res.status(200).json({
-                message: "Live session ready",
+                message: created ? "Live session created" : "Live session ready",
+                created,
                 session: activeSession
             });
+        } finally {
+            pendingSessionCreations.delete(lockKey);
+            resolveLock();
         }
-
-        const session = memoryStore.createOrGetLiveSession(connectionId, currentUserId, participantId);
-        res.status(200).json({
-            message: "Live session ready",
-            session
-        });
     } catch (error) {
         console.log(error.message);
         res.status(500).json({ message: "Failed to initialize live session" });
+    }
+});
+
+// Explicit join validation endpoint for an existing live session
+app.post("/api/live-sessions/:id/join", verifyAuth, async (req, res) => {
+    try {
+        const currentUserId = req.user.userId;
+        const sessionId = req.params.id;
+
+        if (isMongoActive() && !mongoose.Types.ObjectId.isValid(sessionId)) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
+
+        let session = null;
+        if (isMongoActive()) {
+            session = await LiveSession.findById(sessionId)
+                .populate("host", "name email teachSkills learnSkills")
+                .populate("participant", "name email teachSkills learnSkills")
+                .populate("connectionId");
+        } else {
+            session = memoryStore.getLiveSessionById(sessionId);
+        }
+
+        if (!session) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
+
+        const hostId = extractId(session.host);
+        const participantId = extractId(session.participant);
+
+        if (hostId !== currentUserId && participantId !== currentUserId) {
+            return res.status(403).json({ message: "Unauthorized to join this live session" });
+        }
+
+        if (session.status === "completed" || session.status === "cancelled") {
+            return res.status(400).json({ message: "This live session has already ended", session });
+        }
+
+        const sessionObj = typeof session.toObject === "function" ? session.toObject() : { ...session };
+        sessionObj.participants = socketManager.getSessionParticipants(session._id || sessionId);
+
+        res.json({
+            message: "Authorized to join live session",
+            session: sessionObj,
+            participants: sessionObj.participants
+        });
+    } catch (error) {
+        console.log("Join live session error:", error.message);
+        res.status(500).json({ message: "Failed to join live session" });
     }
 });
 
@@ -390,77 +552,152 @@ app.post("/api/live-sessions", verifyAuth, async (req, res) => {
 app.get("/api/live-sessions/:id", verifyAuth, async (req, res) => {
     try {
         const currentUserId = req.user.userId;
+        const sessionId = req.params.id;
+
+        if (isMongoActive() && !mongoose.Types.ObjectId.isValid(sessionId)) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
 
         let session = null;
         if (isMongoActive()) {
-            session = await LiveSession.findById(req.params.id)
+            session = await LiveSession.findById(sessionId)
                 .populate("host", "name email teachSkills learnSkills")
                 .populate("participant", "name email teachSkills learnSkills")
                 .populate("connectionId");
         } else {
-            session = memoryStore.getLiveSessionById(req.params.id);
+            session = memoryStore.getLiveSessionById(sessionId);
         }
 
         if (!session) {
             return res.status(404).json({ message: "Live session not found" });
         }
 
-        const hostId = (session.host._id || session.host).toString();
-        const participantId = (session.participant._id || session.participant).toString();
+        const hostId = extractId(session.host);
+        const participantId = extractId(session.participant);
 
         if (hostId !== currentUserId && participantId !== currentUserId) {
             return res.status(403).json({ message: "Unauthorized to access this session" });
         }
 
-        res.json(session);
+        const sessionObj = typeof session.toObject === "function" ? session.toObject() : { ...session };
+        sessionObj.participants = socketManager.getSessionParticipants(session._id || sessionId);
+
+        res.json(sessionObj);
     } catch (error) {
         console.log(error.message);
         res.status(500).json({ message: "Failed to fetch live session" });
     }
 });
 
-// End live session
-app.put("/api/live-sessions/:id/end", verifyAuth, async (req, res) => {
+// Get chat history strictly scoped to a specific live session
+app.get("/api/live-sessions/:id/messages", verifyAuth, async (req, res) => {
     try {
         const currentUserId = req.user.userId;
+        const sessionId = req.params.id;
+
+        if (isMongoActive() && !mongoose.Types.ObjectId.isValid(sessionId)) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
 
         let session = null;
         if (isMongoActive()) {
-            session = await LiveSession.findById(req.params.id);
+            session = await LiveSession.findById(sessionId);
+        } else {
+            session = memoryStore.getLiveSessionById(sessionId);
+        }
+
+        if (!session) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
+
+        const hostId = extractId(session.host);
+        const participantId = extractId(session.participant);
+
+        if (hostId !== currentUserId && participantId !== currentUserId) {
+            return res.status(403).json({ message: "Unauthorized to view messages for this live session" });
+        }
+
+        if (isMongoActive()) {
+            const messages = await Message.find({ sessionId })
+                .sort({ createdAt: 1 })
+                .populate("sender", "name email")
+                .populate("receiver", "name email");
+            return res.json(messages);
+        }
+
+        const messages = memoryStore.getSessionMessages(sessionId);
+        res.json(messages);
+    } catch (error) {
+        console.log("Fetch session messages error:", error.message);
+        res.status(500).json({ message: "Failed to fetch live session messages" });
+    }
+});
+
+// End live session (Host-authoritative: ends session for all participants)
+app.put("/api/live-sessions/:id/end", verifyAuth, async (req, res) => {
+    try {
+        const currentUserId = req.user.userId;
+        const sessionId = req.params.id;
+
+        if (isMongoActive() && !mongoose.Types.ObjectId.isValid(sessionId)) {
+            return res.status(404).json({ message: "Live session not found" });
+        }
+
+        let session = null;
+        let hostId = "";
+        let participantId = "";
+
+        if (isMongoActive()) {
+            session = await LiveSession.findById(sessionId);
             if (!session) {
                 return res.status(404).json({ message: "Live session not found" });
             }
 
-            const hostId = session.host.toString();
-            const participantId = session.participant.toString();
+            hostId = extractId(session.host);
+            participantId = extractId(session.participant);
 
-            if (hostId !== currentUserId && participantId !== currentUserId) {
-                return res.status(403).json({ message: "Unauthorized to end this session" });
+            if (hostId !== currentUserId) {
+                return res.status(403).json({ message: "Only the session host can end the session for all participants" });
+            }
+
+            if (session.status === "completed") {
+                return res.json({ message: "Live session already completed", session });
             }
 
             session.status = "completed";
             session.endedAt = new Date();
             await session.save();
         } else {
-            session = memoryStore.getLiveSessionById(req.params.id);
+            session = memoryStore.getLiveSessionById(sessionId);
             if (!session) {
                 return res.status(404).json({ message: "Live session not found" });
             }
 
-            const hostId = (session.host._id || session.host).toString();
-            const participantId = (session.participant._id || session.participant).toString();
+            hostId = extractId(session.host);
+            participantId = extractId(session.participant);
 
-            if (hostId !== currentUserId && participantId !== currentUserId) {
-                return res.status(403).json({ message: "Unauthorized to end this session" });
+            if (hostId !== currentUserId) {
+                return res.status(403).json({ message: "Only the session host can end the session for all participants" });
             }
 
-            session = memoryStore.endLiveSession(req.params.id);
+            if (session.status === "completed") {
+                return res.json({ message: "Live session already completed", session });
+            }
+
+            session = memoryStore.endLiveSession(sessionId);
         }
 
-        io.to("session_" + (session._id || req.params.id)).emit("sessionEnded", {
-            sessionId: session._id || req.params.id,
-            endedBy: currentUserId
-        });
+        const resolvedId = extractId(session._id || sessionId);
+        const endPayload = {
+            sessionId: resolvedId,
+            endedBy: currentUserId,
+            endedAt: session.endedAt || new Date()
+        };
+
+        io.to("session_" + resolvedId).emit("sessionEnded", endPayload);
+        io.to("user_" + hostId).emit("sessionEnded", endPayload);
+        io.to("user_" + participantId).emit("sessionEnded", endPayload);
+        socketManager.clearSessionRoom(resolvedId);
 
         res.json({ message: "Live session ended successfully", session });
     } catch (error) {

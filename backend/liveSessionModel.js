@@ -22,6 +22,10 @@ const liveSessionSchema = new mongoose.Schema({
         enum: ["scheduled", "live", "completed", "cancelled"],
         default: "live"
     },
+    skillTopic: {
+        type: String,
+        default: ""
+    },
     startedAt: {
         type: Date,
         default: Date.now

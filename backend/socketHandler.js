@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const Connection = require("./connectionModel");
 const Message = require("./messageModel");
 const User = require("./userModel");
@@ -9,6 +10,91 @@ const JWT_SECRET = process.env.JWT_SECRET || "skillswap_jwt_secret_key_2026_supe
 
 // Map to track active user sockets: userId -> Set of socketId
 const userSockets = new Map();
+
+// Authoritative live session room participant state:
+// sessionId -> Map<userId, { userId, name, role, status, joinedAt, lastSeenAt, socketIds: Set<string> }>
+const sessionRooms = new Map();
+
+function serializeParticipants(sessionId) {
+    const sId = String(sessionId);
+    const roomMap = sessionRooms.get(sId);
+    if (!roomMap) return [];
+    return Array.from(roomMap.values()).map(p => ({
+        userId: p.userId,
+        name: p.name,
+        role: p.role,
+        status: p.status,
+        joinedAt: p.joinedAt,
+        lastSeenAt: p.lastSeenAt
+    }));
+}
+
+function clearSessionRoom(sessionId) {
+    sessionRooms.delete(String(sessionId));
+}
+
+function extractId(val) {
+    if (!val) return "";
+    if (typeof val === "object" && val._id) return val._id.toString();
+    return val.toString();
+}
+
+async function fetchAuthorizedSession(sessionId, userId) {
+    if (!sessionId) return { error: "Session ID required", code: 400 };
+    const sId = String(sessionId);
+
+    let session = null;
+    if (isMongoActive()) {
+        if (mongoose.Types.ObjectId.isValid(sId)) {
+            try {
+                session = await LiveSession.findById(sId)
+                    .populate("host", "name email teachSkills learnSkills")
+                    .populate("participant", "name email teachSkills learnSkills");
+            } catch {
+                session = null;
+            }
+        }
+    }
+    if (!session) {
+        session = memoryStore.getLiveSessionById(sId);
+    }
+
+    if (!session) {
+        return { error: "Live session not found", code: 404 };
+    }
+
+    if (session.status === "completed" || session.status === "cancelled") {
+        return { error: "Session has already ended", code: 400, session };
+    }
+
+    const hostId = extractId(session.host);
+    const participantId = extractId(session.participant);
+    const uid = String(userId);
+
+    if (uid !== hostId && uid !== participantId) {
+        return { error: "Unauthorized to access this live session", code: 403 };
+    }
+
+    // Verify accepted connection
+    const rawConnId = extractId(session.connectionId);
+    let connection = null;
+    if (isMongoActive() && mongoose.Types.ObjectId.isValid(rawConnId)) {
+        try {
+            connection = await Connection.findById(rawConnId);
+        } catch {
+            connection = null;
+        }
+    }
+    if (!connection) {
+        connection = memoryStore.getConnectionById(rawConnId);
+    }
+
+    if (!connection || connection.status !== "accepted") {
+        return { error: "Underlying connection is not accepted", code: 403 };
+    }
+
+    return { session, hostId, participantId, connectionId: rawConnId };
+}
 
 function setupSocketIO(io) {
     // Socket authentication middleware: verifies JWT token
@@ -32,7 +118,7 @@ function setupSocketIO(io) {
             }
 
             let user = null;
-            if (isMongoActive()) {
+            if (isMongoActive() && mongoose.Types.ObjectId.isValid(decoded.userId)) {
                 try {
                     user = await User.findById(decoded.userId).select("_id name email teachSkills learnSkills");
                 } catch {
@@ -49,6 +135,7 @@ function setupSocketIO(io) {
 
             socket.userId = user._id.toString();
             socket.user = user;
+            socket.joinedSessions = new Set();
             next();
         } catch (err) {
             console.error("Socket authentication error:", err.message);
@@ -85,13 +172,12 @@ function setupSocketIO(io) {
         });
 
         // ==========================================
-        // REAL-TIME CHAT EVENTS
+        // 1-ON-1 PERSISTENT CHAT EVENTS (chat.html)
         // ==========================================
 
-        // Send a chat message
         socket.on("sendMessage", async (data, callback) => {
             try {
-                const { connectionId, receiverId, message } = data;
+                const { connectionId, receiverId, message } = data || {};
 
                 if (!connectionId || !receiverId || !message || !message.trim()) {
                     const errRes = { success: false, message: "Invalid message payload" };
@@ -99,9 +185,8 @@ function setupSocketIO(io) {
                     return socket.emit("chatError", errRes);
                 }
 
-                // SECURITY CHECK: Verify accepted connection between socket.userId and receiverId
                 let connection = null;
-                if (isMongoActive()) {
+                if (isMongoActive() && mongoose.Types.ObjectId.isValid(connectionId)) {
                     try {
                         connection = await Connection.findById(connectionId);
                     } catch {
@@ -125,8 +210,8 @@ function setupSocketIO(io) {
                 }
 
                 const senderId = socket.userId;
-                const p1 = (connection.sender._id || connection.sender).toString();
-                const p2 = (connection.receiver._id || connection.receiver).toString();
+                const p1 = extractId(connection.sender);
+                const p2 = extractId(connection.receiver);
 
                 const isSenderParticipant = (senderId === p1 || senderId === p2);
                 const isReceiverParticipant = (receiverId.toString() === p1 || receiverId.toString() === p2);
@@ -160,10 +245,7 @@ function setupSocketIO(io) {
                     populatedMessage = memoryStore.createMessage(senderId, receiverId, connectionId, message.trim());
                 }
 
-                // Emit to receiver's personal room
                 io.to("user_" + receiverId).emit("receiveMessage", populatedMessage);
-
-                // Confirm back to sender
                 socket.emit("messageSent", populatedMessage);
 
                 if (typeof callback === "function") {
@@ -177,14 +259,13 @@ function setupSocketIO(io) {
             }
         });
 
-        // Mark messages as read
         socket.on("markAsRead", async (data) => {
             try {
-                const { connectionId } = data;
+                const { connectionId } = data || {};
                 if (!connectionId) return;
 
                 let connection = null;
-                if (isMongoActive()) {
+                if (isMongoActive() && mongoose.Types.ObjectId.isValid(connectionId)) {
                     try {
                         connection = await Connection.findById(connectionId);
                     } catch {
@@ -197,8 +278,8 @@ function setupSocketIO(io) {
                 if (!connection || connection.status !== "accepted") return;
 
                 const currentUserId = socket.userId;
-                const p1 = (connection.sender._id || connection.sender).toString();
-                const p2 = (connection.receiver._id || connection.receiver).toString();
+                const p1 = extractId(connection.sender);
+                const p2 = extractId(connection.receiver);
                 if (currentUserId !== p1 && currentUserId !== p2) return;
 
                 const otherUserId = (p1 === currentUserId) ? p2 : p1;
@@ -212,7 +293,6 @@ function setupSocketIO(io) {
                     memoryStore.markMessagesAsRead(connectionId, currentUserId);
                 }
 
-                // Notify sender that their messages have been read
                 io.to("user_" + otherUserId).emit("messagesRead", {
                     connectionId,
                     readerId: currentUserId
@@ -222,9 +302,8 @@ function setupSocketIO(io) {
             }
         });
 
-        // Typing indicator
         socket.on("typing", (data) => {
-            const { receiverId, connectionId, isTyping } = data;
+            const { receiverId, connectionId, isTyping } = data || {};
             if (receiverId) {
                 io.to("user_" + receiverId).emit("userTyping", {
                     senderId: socket.userId,
@@ -235,106 +314,254 @@ function setupSocketIO(io) {
         });
 
         // ==========================================
-        // WEBRTC LIVE SESSION SIGNALING EVENTS
+        // LIVE SESSION ROOM, PRESENCE & WEBRTC SIGNALING
         // ==========================================
 
-        socket.on("joinSession", async ({ sessionId }, callback) => {
+        socket.on("joinSession", async ({ sessionId } = {}, callback) => {
             try {
-                if (!sessionId) {
-                    if (typeof callback === "function") callback({ success: false, message: "Session ID required" });
-                    return;
-                }
-
-                let session = null;
-                if (isMongoActive()) {
-                    try {
-                        session = await LiveSession.findById(sessionId)
-                            .populate("host", "name email teachSkills learnSkills")
-                            .populate("participant", "name email teachSkills learnSkills");
-                    } catch {
-                        session = null;
+                const authCheck = await fetchAuthorizedSession(sessionId, socket.userId);
+                if (authCheck.error) {
+                    if (typeof callback === "function") {
+                        callback({ success: false, message: authCheck.error, code: authCheck.code });
                     }
-                }
-                if (!session) {
-                    session = memoryStore.getLiveSessionById(sessionId);
-                }
-
-                if (!session) {
-                    if (typeof callback === "function") callback({ success: false, message: "Live session not found" });
                     return;
                 }
 
-                if (session.status === "completed" || session.status === "cancelled") {
-                    if (typeof callback === "function") callback({ success: false, message: "Session has already ended" });
-                    return;
-                }
-
+                const { session, hostId, participantId } = authCheck;
+                const sId = extractId(session._id || sessionId);
                 const currentUserId = socket.userId;
-                const hostId = (session.host._id || session.host).toString();
-                const participantId = (session.participant._id || session.participant).toString();
+                const roomName = "session_" + sId;
 
-                if (currentUserId !== hostId && currentUserId !== participantId) {
-                    if (typeof callback === "function") callback({ success: false, message: "Unauthorized to join this live session" });
-                    return;
-                }
-
-                // Verify accepted connection
-                let connection = null;
-                const rawConnId = session.connectionId._id || session.connectionId;
-                if (isMongoActive()) {
-                    try {
-                        connection = await Connection.findById(rawConnId);
-                    } catch {
-                        connection = null;
-                    }
-                }
-                if (!connection) {
-                    connection = memoryStore.getConnectionById(rawConnId);
-                }
-
-                if (!connection || connection.status !== "accepted") {
-                    if (typeof callback === "function") callback({ success: false, message: "Underlying connection is not accepted" });
-                    return;
-                }
-
-                const roomName = "session_" + sessionId;
                 socket.join(roomName);
+                socket.joinedSessions.add(sId);
 
-                // Notify room that user joined
+                // Initialize authoritative room participant map if needed
+                if (!sessionRooms.has(sId)) {
+                    const map = new Map();
+                    const hostName = (session.host && session.host.name) ? session.host.name : "Host";
+                    const partName = (session.participant && session.participant.name) ? session.participant.name : "Participant";
+                    map.set(hostId, {
+                        userId: hostId,
+                        name: hostName,
+                        role: "host",
+                        status: "offline",
+                        joinedAt: null,
+                        lastSeenAt: null,
+                        socketIds: new Set()
+                    });
+                    map.set(participantId, {
+                        userId: participantId,
+                        name: partName,
+                        role: "participant",
+                        status: "offline",
+                        joinedAt: null,
+                        lastSeenAt: null,
+                        socketIds: new Set()
+                    });
+                    sessionRooms.set(sId, map);
+                }
+
+                const roomMap = sessionRooms.get(sId);
+                const now = new Date().toISOString();
+                let entry = roomMap.get(currentUserId);
+                if (!entry) {
+                    entry = {
+                        userId: currentUserId,
+                        name: socket.user.name,
+                        role: currentUserId === hostId ? "host" : "participant",
+                        status: "online",
+                        joinedAt: now,
+                        lastSeenAt: now,
+                        socketIds: new Set()
+                    };
+                    roomMap.set(currentUserId, entry);
+                }
+
+                const wasOffline = entry.status !== "online" || entry.socketIds.size === 0;
+                entry.name = socket.user.name;
+                entry.status = "online";
+                entry.joinedAt = entry.joinedAt || now;
+                entry.lastSeenAt = now;
+                entry.socketIds.add(socket.id);
+
+                const participants = serializeParticipants(sId);
+
+                // Notify peers in the session room
                 socket.to(roomName).emit("sessionUserJoined", {
+                    sessionId: sId,
                     userId: currentUserId,
                     userName: socket.user.name,
+                    role: entry.role,
+                    reconnected: !wasOffline ? false : true,
                     socketId: socket.id
+                });
+
+                // Broadcast authoritative participant list to everyone in the room (including joiner)
+                io.to(roomName).emit("sessionParticipantsUpdated", {
+                    sessionId: sId,
+                    participants
                 });
 
                 if (typeof callback === "function") {
                     callback({
                         success: true,
                         session,
+                        participants,
                         userId: currentUserId,
                         userName: socket.user.name
                     });
                 }
             } catch (err) {
                 console.error("Error in joinSession:", err);
-                if (typeof callback === "function") callback({ success: false, message: "Server error joining session" });
+                if (typeof callback === "function") {
+                    callback({ success: false, message: "Server error joining session" });
+                }
             }
         });
 
-        socket.on("webrtcOffer", ({ sessionId, offer, targetUserId }) => {
+        // Session-scoped real-time live chat message
+        socket.on("sendSessionMessage", async (data, callback) => {
+            try {
+                const { sessionId, message, clientMessageId } = data || {};
+                const trimmedText = typeof message === "string" ? message.trim() : "";
+
+                if (!sessionId || !trimmedText) {
+                    const errRes = { success: false, message: "Session ID and message text are required" };
+                    if (typeof callback === "function") callback(errRes);
+                    return;
+                }
+
+                if (trimmedText.length > 4000) {
+                    const errRes = { success: false, message: "Message exceeds 4000 characters limit" };
+                    if (typeof callback === "function") callback(errRes);
+                    return;
+                }
+
+                const authCheck = await fetchAuthorizedSession(sessionId, socket.userId);
+                if (authCheck.error) {
+                    const errRes = { success: false, message: authCheck.error, code: authCheck.code };
+                    if (typeof callback === "function") callback(errRes);
+                    return;
+                }
+
+                const { session, hostId, participantId, connectionId } = authCheck;
+                const sId = extractId(session._id || sessionId);
+                const senderId = socket.userId;
+                const receiverId = senderId === hostId ? participantId : hostId;
+                const cleanClientId = clientMessageId ? String(clientMessageId).slice(0, 128) : null;
+
+                // Ensure sender socket is in the session room
+                const roomName = "session_" + sId;
+                if (!socket.joinedSessions.has(sId)) {
+                    socket.join(roomName);
+                    socket.joinedSessions.add(sId);
+                }
+
+                let populatedMessage = null;
+                let duplicate = false;
+
+                if (isMongoActive()) {
+                    try {
+                        if (cleanClientId) {
+                            const existing = await Message.findOne({
+                                sessionId: sId,
+                                sender: senderId,
+                                clientMessageId: cleanClientId
+                            })
+                                .populate("sender", "name email")
+                                .populate("receiver", "name email");
+
+                            if (existing) {
+                                populatedMessage = existing;
+                                duplicate = true;
+                            }
+                        }
+
+                        if (!populatedMessage) {
+                            const saved = await Message.create({
+                                sender: senderId,
+                                receiver: receiverId,
+                                connection: connectionId,
+                                sessionId: sId,
+                                clientMessageId: cleanClientId,
+                                message: trimmedText,
+                                read: false
+                            });
+                            populatedMessage = await Message.findById(saved._id)
+                                .populate("sender", "name email")
+                                .populate("receiver", "name email");
+                        }
+                    } catch (dbErr) {
+                        console.error("Mongo sendSessionMessage error:", dbErr.message);
+                        populatedMessage = null;
+                    }
+                } else {
+                    if (cleanClientId) {
+                        const existing = memoryStore.findSessionMessageByClientId(sId, senderId, cleanClientId);
+                        if (existing) {
+                            populatedMessage = existing;
+                            duplicate = true;
+                        }
+                    }
+                    if (!populatedMessage) {
+                        populatedMessage = memoryStore.createMessage(senderId, receiverId, connectionId, trimmedText, {
+                            sessionId: sId,
+                            clientMessageId: cleanClientId
+                        });
+                    }
+                }
+
+                if (!populatedMessage) {
+                    const errRes = { success: false, message: "Failed to persist session message" };
+                    if (typeof callback === "function") callback(errRes);
+                    return;
+                }
+
+                // Emit strictly to this session's room only (never across sessions)
+                if (!duplicate) {
+                    io.to(roomName).emit("sessionMessage", populatedMessage);
+                }
+
+                if (typeof callback === "function") {
+                    callback({ success: true, duplicate, message: populatedMessage });
+                }
+            } catch (err) {
+                console.error("Error in sendSessionMessage:", err);
+                const errRes = { success: false, message: "Failed to send session message" };
+                if (typeof callback === "function") callback(errRes);
+            }
+        });
+
+        socket.on("sessionTyping", ({ sessionId, isTyping } = {}) => {
+            if (!sessionId) return;
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("sessionUserTyping", {
+                sessionId: sId,
+                userId: socket.userId,
+                userName: socket.user.name,
+                isTyping: !!isTyping
+            });
+        });
+
+        socket.on("webrtcOffer", ({ sessionId, offer }) => {
             if (!sessionId || !offer) return;
-            const roomName = "session_" + sessionId;
-            socket.to(roomName).emit("webrtcOffer", {
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("webrtcOffer", {
+                sessionId: sId,
                 offer,
                 senderId: socket.userId,
                 senderName: socket.user.name
             });
         });
 
-        socket.on("webrtcAnswer", ({ sessionId, answer, targetUserId }) => {
+        socket.on("webrtcAnswer", ({ sessionId, answer }) => {
             if (!sessionId || !answer) return;
-            const roomName = "session_" + sessionId;
-            socket.to(roomName).emit("webrtcAnswer", {
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("webrtcAnswer", {
+                sessionId: sId,
                 answer,
                 senderId: socket.userId
             });
@@ -342,44 +569,112 @@ function setupSocketIO(io) {
 
         socket.on("iceCandidate", ({ sessionId, candidate }) => {
             if (!sessionId || !candidate) return;
-            const roomName = "session_" + sessionId;
-            socket.to(roomName).emit("iceCandidate", {
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("iceCandidate", {
+                sessionId: sId,
                 candidate,
                 senderId: socket.userId
             });
         });
 
+        socket.on("webrtcRequestReconnect", ({ sessionId } = {}) => {
+            if (!sessionId) return;
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("webrtcRequestReconnect", {
+                sessionId: sId,
+                senderId: socket.userId,
+                senderName: socket.user.name
+            });
+        });
+
         socket.on("mediaToggle", ({ sessionId, type, enabled }) => {
             if (!sessionId) return;
-            const roomName = "session_" + sessionId;
-            socket.to(roomName).emit("userMediaToggled", {
+            const sId = String(sessionId);
+            if (!socket.joinedSessions.has(sId)) return;
+            socket.to("session_" + sId).emit("userMediaToggled", {
+                sessionId: sId,
                 userId: socket.userId,
                 type,
                 enabled
             });
         });
 
-        socket.on("leaveSession", async ({ sessionId }) => {
-            if (!sessionId) return;
-            const roomName = "session_" + sessionId;
-            socket.to(roomName).emit("sessionUserLeft", {
-                userId: socket.userId,
-                userName: socket.user.name
-            });
+        socket.on("leaveSession", ({ sessionId } = {}, callback) => {
+            if (!sessionId) {
+                if (typeof callback === "function") callback({ success: false });
+                return;
+            }
+            const sId = String(sessionId);
+            const roomName = "session_" + sId;
+
+            socket.joinedSessions.delete(sId);
             socket.leave(roomName);
+
+            const roomMap = sessionRooms.get(sId);
+            if (roomMap && roomMap.has(userId)) {
+                const entry = roomMap.get(userId);
+                entry.socketIds.delete(socket.id);
+                entry.lastSeenAt = new Date().toISOString();
+                if (entry.socketIds.size === 0) {
+                    entry.status = "offline";
+                    socket.to(roomName).emit("sessionUserLeft", {
+                        sessionId: sId,
+                        userId: socket.userId,
+                        userName: socket.user.name
+                    });
+                    io.to(roomName).emit("sessionParticipantsUpdated", {
+                        sessionId: sId,
+                        participants: serializeParticipants(sId)
+                    });
+                }
+            } else {
+                socket.to(roomName).emit("sessionUserLeft", {
+                    sessionId: sId,
+                    userId: socket.userId,
+                    userName: socket.user.name
+                });
+            }
+
+            if (typeof callback === "function") callback({ success: true });
         });
 
         // ==========================================
         // DISCONNECT
         // ==========================================
-        socket.on("disconnect", () => {
-            console.log(`🔌 User disconnected: ${socket.user?.name} (${userId})`);
+        socket.on("disconnect", (reason) => {
+            console.log(`🔌 User disconnected: ${socket.user?.name} (${userId}) [${reason}]`);
+
+            // Notify any active live session rooms this socket was participating in
+            for (const sId of socket.joinedSessions) {
+                const roomName = "session_" + sId;
+                const roomMap = sessionRooms.get(sId);
+                if (roomMap && roomMap.has(userId)) {
+                    const entry = roomMap.get(userId);
+                    entry.socketIds.delete(socket.id);
+                    entry.lastSeenAt = new Date().toISOString();
+                    if (entry.socketIds.size === 0) {
+                        entry.status = "disconnected";
+                        io.to(roomName).emit("sessionUserDisconnected", {
+                            sessionId: sId,
+                            userId,
+                            userName: socket.user?.name || "Participant"
+                        });
+                        io.to(roomName).emit("sessionParticipantsUpdated", {
+                            sessionId: sId,
+                            participants: serializeParticipants(sId)
+                        });
+                    }
+                }
+            }
+            socket.joinedSessions.clear();
+
             const sockets = userSockets.get(userId);
             if (sockets) {
                 sockets.delete(socket.id);
                 if (sockets.size === 0) {
                     userSockets.delete(userId);
-                    // Broadcast offline status
                     io.emit("userStatusChanged", { userId, online: false });
                 }
             }
@@ -390,8 +685,11 @@ function setupSocketIO(io) {
         isUserOnline: (uid) => {
             const uidStr = uid?.toString();
             return userSockets.has(uidStr) && userSockets.get(uidStr).size > 0;
-        }
+        },
+        getSessionParticipants: serializeParticipants,
+        clearSessionRoom
     };
 }
 
-module.exports = { setupSocketIO, JWT_SECRET };
+module.exports = { setupSocketIO, JWT_SECRET, clearSessionRoom };
+
